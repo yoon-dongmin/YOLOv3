@@ -6,6 +6,11 @@ import numpy as np
 import utils.utils
 
 
+"""2개 class 존재
+1. YOLODetection : inference?
+2. YOLOv3 : train에서 사용
+"""
+
 class YOLODetection(nn.Module):
     def __init__(self, anchors, image_size: int, num_classes: int):
         super(YOLODetection, self).__init__()
@@ -13,8 +18,8 @@ class YOLODetection(nn.Module):
         self.num_anchors = len(anchors)
         self.num_classes = num_classes
         self.image_size = image_size
-        self.mse_loss = nn.MSELoss()
-        self.bce_loss = nn.BCELoss()
+        self.mse_loss = nn.MSELoss() #box regression
+        self.bce_loss = nn.BCELoss() #classification
         self.ignore_thres = 0.5
         self.obj_scale = 1
         self.no_obj_scale = 100
@@ -22,36 +27,41 @@ class YOLODetection(nn.Module):
 
     def forward(self, x, targets):
         device = torch.device('cuda' if x.is_cuda else 'cpu')
-
+        #print(x.size(0),123)
         num_batches = x.size(0)
         grid_size = x.size(2)
 
         # 출력값 형태 변환
+        # 출력할 필요있음
         prediction = (
-            x.view(num_batches, self.num_anchors, self.num_classes + 5, grid_size, grid_size)
-                .permute(0, 1, 3, 4, 2).contiguous()
+            x.view(num_batches, self.num_anchors, self.num_classes + 5, grid_size, grid_size) # (#batch,#anchors,#classes,grid_size,grid_size)
+                .permute(0, 1, 3, 4, 2).contiguous() #contiguous():메모리 할당 # (#batch,#anchors,grid_size,grid_size,#classes)
         )
 
         # Get outputs
+        # cx,cy 이름변경필요
         cx = torch.sigmoid(prediction[..., 0])  # Center x
         cy = torch.sigmoid(prediction[..., 1])  # Center y
         w = prediction[..., 2]  # Width
         h = prediction[..., 3]  # Height
         pred_conf = torch.sigmoid(prediction[..., 4])  # Object confidence (objectness)
-        pred_cls = torch.sigmoid(prediction[..., 5:])  # Class prediction
+        pred_cls = torch.sigmoid(prediction[..., 5:])  # Class prediction 클래스 갯수만큼 존재
 
         # Calculate offsets for each grid
-        stride = self.image_size / grid_size
+        stride = self.image_size / grid_size #체크
         grid_x = torch.arange(grid_size, dtype=torch.float, device=device).repeat(grid_size, 1).view(
-            [1, 1, grid_size, grid_size])
+            [1, 1, grid_size, grid_size]) #row,colum그리드 생성
         grid_y = torch.arange(grid_size, dtype=torch.float, device=device).repeat(grid_size, 1).t().view(
-            [1, 1, grid_size, grid_size])
+            [1, 1, grid_size, grid_size]) #torch.t()는 transpose
+        #미리 설정해둔 anchor를 scaled anchor로 변경
         scaled_anchors = torch.as_tensor([(a_w / stride, a_h / stride) for a_w, a_h in self.anchors],
                                          dtype=torch.float, device=device)
-        anchor_w = scaled_anchors[:, 0:1].view((1, self.num_anchors, 1, 1))
+        #체크
+        anchor_w = scaled_anchors[:, 0:1].view((1, self.num_anchors, 1, 1)) #[:, 0:1]=> col로 출력
         anchor_h = scaled_anchors[:, 1:2].view((1, self.num_anchors, 1, 1))
 
         # Add offset and scale with anchors
+        # predict한 box정보 저장
         pred_boxes = torch.zeros_like(prediction[..., :4], device=device)
         pred_boxes[..., 0] = cx + grid_x
         pred_boxes[..., 1] = cy + grid_y
@@ -61,7 +71,7 @@ class YOLODetection(nn.Module):
         pred = (pred_boxes.view(num_batches, -1, 4) * stride,
                 pred_conf.view(num_batches, -1, 1),
                 pred_cls.view(num_batches, -1, self.num_classes))
-        output = torch.cat(pred, -1)
+        output = torch.cat(pred, -1) #box,conf,cls
 
         if targets is None:
             return output, 0
@@ -123,15 +133,17 @@ class YOLODetection(nn.Module):
 class YOLOv3(nn.Module):
     def __init__(self, image_size: int, num_classes: int):
         super(YOLOv3, self).__init__()
+        #k-means clustering통해 구한 9개 abox
         anchors = {'scale1': [(10, 13), (16, 30), (33, 23)],
                    'scale2': [(30, 61), (62, 45), (59, 119)],
                    'scale3': [(116, 90), (156, 198), (373, 326)]}
         final_out_channel = 3 * (4 + 1 + num_classes)
 
-        self.darknet53 = self.make_darknet53()
-        self.conv_block3 = self.make_conv_block(1024, 512)
-        self.conv_final3 = self.make_conv_final(512, final_out_channel)
-        self.yolo_layer3 = YOLODetection(anchors['scale3'], image_size, num_classes)
+        self.darknet53 = self.make_darknet53() #output : 13x13x1024
+
+        self.conv_block3 = self.make_conv_block(1024, 512) #make_conv랑 구분
+        self.conv_final3 = self.make_conv_final(512, final_out_channel) #512 -> 3*(4 + 1 + num_classes)
+        self.yolo_layer3 = YOLODetection(anchors['scale3'], image_size, num_classes) # anchors: [(116, 90), (156, 198), (373, 326)]
 
         self.upsample2 = self.make_upsample(512, 256, scale_factor=2)
         self.conv_block2 = self.make_conv_block(768, 256)
@@ -152,20 +164,21 @@ class YOLOv3(nn.Module):
         # Darknet-53 forward
         with torch.no_grad():
             for key, module in self.darknet53.items():
+                ###print(key) 체크
                 module_type = key.split('_')[0]
 
                 if module_type == 'conv':
                     x = module(x)
                 elif module_type == 'residual':
                     out = module(x)
-                    x += out
-                    if key == 'residual_3_8' or key == 'residual_4_8' or key == 'residual_5_4':
+                    x += out #현재값을 추가적으로 가짐
+                    if key == 'residual_3_8' or key == 'residual_4_8' or key == 'residual_5_4': #젤 끝에 해당하는 layer
                         residual_output[key] = x
 
         # Yolov3 layer forward
-        conv_block3 = self.conv_block3(residual_output['residual_5_4'])
-        scale3 = self.conv_final3(conv_block3)
-        yolo_output3, layer_loss = self.yolo_layer3(scale3, targets)
+        conv_block3 = self.conv_block3(residual_output['residual_5_4']) #마지막 conv layer
+        scale3 = self.conv_final3(conv_block3) #512 -> 3*(4 + 1 + num_classes)
+        yolo_output3, layer_loss = self.yolo_layer3(scale3, targets) #output과 loss 리턴
         loss += layer_loss
 
         scale2 = self.upsample2(conv_block3)
@@ -183,14 +196,16 @@ class YOLOv3(nn.Module):
         loss += layer_loss
 
         yolo_outputs = [yolo_output1, yolo_output2, yolo_output3]
-        yolo_outputs = torch.cat(yolo_outputs, 1).detach().cpu()
-        return yolo_outputs if targets is None else (loss, yolo_outputs)
-
+        yolo_outputs = torch.cat(yolo_outputs, 1).detach().cpu() #output정보를 concat
+        return yolo_outputs if targets is None else (loss, yolo_outputs) #target이 있다면 loss도 같이 출력 => 학습
+ 
+    #kernel_size는 3x3으로 동일
     def make_darknet53(self):
+        #지정한 이름으로 모듈 접근
         modules = nn.ModuleDict()
 
         modules['conv_1'] = self.make_conv(3, 32, kernel_size=3, requires_grad=False)
-        modules['conv_2'] = self.make_conv(32, 64, kernel_size=3, stride=2, requires_grad=False)
+        modules['conv_2'] = self.make_conv(32, 64, kernel_size=3, stride=2, requires_grad=False) #stride 2로 변경
         modules['residual_1_1'] = self.make_residual_block(in_channels=64)
         modules['conv_3'] = self.make_conv(64, 128, kernel_size=3, stride=2, requires_grad=False)
         modules['residual_2_1'] = self.make_residual_block(in_channels=128)
@@ -220,29 +235,31 @@ class YOLOv3(nn.Module):
         modules['residual_5_4'] = self.make_residual_block(in_channels=1024)
         return modules
 
-    def make_conv(self, in_channels: int, out_channels: int, kernel_size: int, stride=1, padding=1, requires_grad=True):
-        module1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=False)
-        module2 = nn.BatchNorm2d(out_channels, momentum=0.9, eps=1e-5)
+    def make_conv(self, in_channels: int, out_channels: int, kernel_size: int, stride=1, padding=1, requires_grad=True): #기본 stride와 padding값은 1
+        module1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=False) #2d conv 연산
+        module2 = nn.BatchNorm2d(out_channels, momentum=0.9, eps=1e-5) #covariant shift방지
+        #학습이 필요하지 않은 경우 freeze
         if not requires_grad:
             for param in module1.parameters():
                 param.requires_grad_(False)
             for param in module2.parameters():
                 param.requires_grad_(False)
 
+        #conv,batchnorm,LeakyReLU적용
         modules = nn.Sequential(module1, module2, nn.LeakyReLU(negative_slope=0.1))
         return modules
 
     def make_conv_block(self, in_channels: int, out_channels: int):
         double_channels = out_channels * 2
         modules = nn.Sequential(
-            self.make_conv(in_channels, out_channels, kernel_size=1, padding=0),
-            self.make_conv(out_channels, double_channels, kernel_size=3),
-            self.make_conv(double_channels, out_channels, kernel_size=1, padding=0),
-            self.make_conv(out_channels, double_channels, kernel_size=3),
-            self.make_conv(double_channels, out_channels, kernel_size=1, padding=0)
+            self.make_conv(in_channels, out_channels, kernel_size=1, padding=0), #1x1
+            self.make_conv(out_channels, double_channels, kernel_size=3), #3x3
+            self.make_conv(double_channels, out_channels, kernel_size=1, padding=0), #1x1
+            self.make_conv(out_channels, double_channels, kernel_size=3), #3x3
+            self.make_conv(double_channels, out_channels, kernel_size=1, padding=0) #1x1
         )
         return modules
-
+    #3x3,1x1
     def make_conv_final(self, in_channels: int, out_channels: int):
         modules = nn.Sequential(
             self.make_conv(in_channels, in_channels * 2, kernel_size=3),
@@ -253,11 +270,12 @@ class YOLOv3(nn.Module):
     def make_residual_block(self, in_channels: int):
         half_channels = in_channels // 2
         block = nn.Sequential(
-            self.make_conv(in_channels, half_channels, kernel_size=1, padding=0, requires_grad=False),
-            self.make_conv(half_channels, in_channels, kernel_size=3, requires_grad=False)
+            self.make_conv(in_channels, half_channels, kernel_size=1, padding=0, requires_grad=False), #1x1
+            self.make_conv(half_channels, in_channels, kernel_size=3, requires_grad=False) #3x3
         )
         return block
-
+    #이 때 nearest neighbor사용
+    #1x1으로 채널 수 줄이고 upsampling
     def make_upsample(self, in_channels: int, out_channels: int, scale_factor: int):
         modules = nn.Sequential(
             self.make_conv(in_channels, out_channels, kernel_size=1, padding=0),

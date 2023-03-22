@@ -42,8 +42,8 @@ class_names = utils.utils.load_classes(data_config['names'])
 
 # 모델 준비하기
 model = model.yolov3.YOLOv3(args.image_size, num_classes).to(device)
-model.apply(utils.utils.init_weights_normal)
-if args.pretrained_weights.endswith('.pth'):
+model.apply(utils.utils.init_weights_normal) #pretrain된 모델 수정
+if args.pretrained_weights.endswith('.pth'): #접미사로 문장 찾기
     model.load_state_dict(torch.load(args.pretrained_weights))
 else:
     model.load_darknet_weights(args.pretrained_weights)
@@ -55,7 +55,7 @@ dataloader = torch.utils.data.DataLoader(dataset,
                                          shuffle=True,
                                          num_workers=args.num_workers,
                                          pin_memory=True,
-                                         collate_fn=dataset.collate_fn)
+                                         collate_fn=dataset.collate_fn) #batchsize가 2이상인 경우 collate_fn을 설정하여 값을 넘겨줘야 함
 
 # optimizer 설정
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)

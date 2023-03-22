@@ -141,7 +141,7 @@ class ListDataset(torch.utils.data.Dataset):
         return len(self.image_files)
 
     def collate_fn(self, batch):
-        paths, images, targets = list(zip(*batch))
+        paths, images, targets = list(zip(*batch)) #batch 크기만큼 다음의 값을 가져옴
 
         # Remove empty placeholder targets
         targets = [boxes for boxes in targets if boxes is not None]
