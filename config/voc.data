@@ -1,4 +1,4 @@
 classes=20
-train=../../data/voc/train.txt
-valid=../../data/voc/2007_test.txt
-names=../../data/voc/voc_classes.txt
+train=C:\Users\admin\Desktop\yolov3-pytorch\data\2012_train.txt
+valid=C:\Users\admin\Desktop\yolov3-pytorch\data\2012_val.txt
+names=C:\Users\admin\Desktop\yolov3-pytorch\voc_classes.txt

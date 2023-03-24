@@ -4,6 +4,9 @@ import torch.utils.tensorboard
 import numpy as np
 
 import utils.utils
+import utils.datasets
+import torch.utils.tensorboard
+import tqdm
 
 
 """2개 class 존재
@@ -21,23 +24,27 @@ class YOLODetection(nn.Module):
         self.mse_loss = nn.MSELoss() #box regression
         self.bce_loss = nn.BCELoss() #classification
         self.ignore_thres = 0.5
+        #아래 두값?
         self.obj_scale = 1
         self.no_obj_scale = 100
         self.metrics = {}
 
     def forward(self, x, targets):
         device = torch.device('cuda' if x.is_cuda else 'cpu')
-        #print(x.size(0),123)
+        #print(x.size(),123) => e.g., [1, 255, 13, 13]
+        
         num_batches = x.size(0)
         grid_size = x.size(2)
-
+  
         # 출력값 형태 변환
         # 출력할 필요있음
         prediction = (
             x.view(num_batches, self.num_anchors, self.num_classes + 5, grid_size, grid_size) # (#batch,#anchors,#classes,grid_size,grid_size)
                 .permute(0, 1, 3, 4, 2).contiguous() #contiguous():메모리 할당 # (#batch,#anchors,grid_size,grid_size,#classes)
         )
-
+        #print(prediction.size()) # => e.g.,[1, 3, 13, 13, 85]
+        #print(prediction[..., 5:].size())
+        #exit()
         # Get outputs
         # cx,cy 이름변경필요
         cx = torch.sigmoid(prediction[..., 0])  # Center x
@@ -48,34 +55,69 @@ class YOLODetection(nn.Module):
         pred_cls = torch.sigmoid(prediction[..., 5:])  # Class prediction 클래스 갯수만큼 존재
 
         # Calculate offsets for each grid
-        stride = self.image_size / grid_size #체크
+        stride = self.image_size / grid_size #e.g., 416/13 => 32
+
+
         grid_x = torch.arange(grid_size, dtype=torch.float, device=device).repeat(grid_size, 1).view(
             [1, 1, grid_size, grid_size]) #row,colum그리드 생성
+
         grid_y = torch.arange(grid_size, dtype=torch.float, device=device).repeat(grid_size, 1).t().view(
             [1, 1, grid_size, grid_size]) #torch.t()는 transpose
+        #print(grid_x.shape,111)
+
         #미리 설정해둔 anchor를 scaled anchor로 변경
         scaled_anchors = torch.as_tensor([(a_w / stride, a_h / stride) for a_w, a_h in self.anchors],
                                          dtype=torch.float, device=device)
+        
+        #print(scaled_anchors,111)
+        """
+        e.g.,=>
+        [[ 3.6250,  2.8125],
+        [ 4.8750,  6.1875],
+        [11.6562, 10.1875]]
+        """
+      
         #체크
         anchor_w = scaled_anchors[:, 0:1].view((1, self.num_anchors, 1, 1)) #[:, 0:1]=> col로 출력
         anchor_h = scaled_anchors[:, 1:2].view((1, self.num_anchors, 1, 1))
-
+        #print(anchor_w.shape,111)
+     
         # Add offset and scale with anchors
         # predict한 box정보 저장
-        pred_boxes = torch.zeros_like(prediction[..., :4], device=device)
+        pred_boxes = torch.zeros_like(prediction[..., :4], device=device) #zero vector 생성
+        #print(pred_boxes.shape,111) #e.g., [1, 3, 13, 13, 4]
+
+        #값들 하나씩 추가해 나감
         pred_boxes[..., 0] = cx + grid_x
+        #print(pred_boxes,111)
         pred_boxes[..., 1] = cy + grid_y
         pred_boxes[..., 2] = torch.exp(w) * anchor_w
         pred_boxes[..., 3] = torch.exp(h) * anchor_h
 
-        pred = (pred_boxes.view(num_batches, -1, 4) * stride,
-                pred_conf.view(num_batches, -1, 1),
-                pred_cls.view(num_batches, -1, self.num_classes))
-        output = torch.cat(pred, -1) #box,conf,cls
+        # print(pred_boxes,111)
+        # print(pred_boxes.view(num_batches, -1, 4),222)
+        # print(pred_boxes.view(num_batches, -1, 4) * stride,222)
 
+        
+        # print(pred_conf.shape,111)  e.g., =>  [1, 3, 13, 13]
+        # print(pred_conf.view(num_batches, -1, 1).shape,222) e.g., => [1, 507, 1]
+
+        # print(pred_cls.shape,111) # e.g., => [1, 3, 13, 13, 80]
+        # print(pred_cls.view(num_batches, -1, self.num_classes).shape,222) # e.g., =>[1, 507, 80]
+        
+        pred = (pred_boxes.view(num_batches, -1, 4) * stride, #기존 이미지의 크기로 변경 # [1, 507, 4]
+                pred_conf.view(num_batches, -1, 1), #flatten
+                pred_cls.view(num_batches, -1, self.num_classes)) #flatten
+
+        #print(pred_boxes.size(),123)
+      
+        output = torch.cat(pred, -1) #box,conf,cls
+        #print(output.shape) # e.g., =>[1, 507, 85]
+        
         if targets is None:
             return output, 0
-
+        
+        #target을 입력으로 받아 다음의 값을 가져옴
         iou_scores, class_mask, obj_mask, no_obj_mask, tx, ty, tw, th, tcls, tconf = utils.utils.build_targets(
             pred_boxes=pred_boxes,
             pred_cls=pred_cls,
@@ -85,22 +127,32 @@ class YOLODetection(nn.Module):
             device=device
         )
 
+        print(111)
+        exit()
         # Loss: Mask outputs to ignore non-existing objects (except with conf. loss)
+        # box는 mse loss
         loss_x = self.mse_loss(cx[obj_mask], tx[obj_mask])
         loss_y = self.mse_loss(cy[obj_mask], ty[obj_mask])
         loss_w = self.mse_loss(w[obj_mask], tw[obj_mask])
         loss_h = self.mse_loss(h[obj_mask], th[obj_mask])
         loss_bbox = loss_x + loss_y + loss_w + loss_h
-        loss_conf_obj = self.bce_loss(pred_conf[obj_mask], tconf[obj_mask])
-        loss_conf_no_obj = self.bce_loss(pred_conf[no_obj_mask], tconf[no_obj_mask])
+    
+        # confidence score는 bce loss
+        loss_conf_obj = self.bce_loss(pred_conf[obj_mask], tconf[obj_mask]) #obj : 1
+        loss_conf_no_obj = self.bce_loss(pred_conf[no_obj_mask], tconf[no_obj_mask]) #no_obj : 0
         loss_conf = self.obj_scale * loss_conf_obj + self.no_obj_scale * loss_conf_no_obj
+
+        #classification은 bce loss
         loss_cls = self.bce_loss(pred_cls[obj_mask], tcls[obj_mask])
+
+        #최종 loss
         loss_layer = loss_bbox + loss_conf + loss_cls
 
         # Metrics
         conf50 = (pred_conf > 0.5).float()
         iou50 = (iou_scores > 0.5).float()
         iou75 = (iou_scores > 0.75).float()
+
         detected_mask = conf50 * class_mask * tconf
         cls_acc = 100 * class_mask[obj_mask].mean()
         conf_obj = pred_conf[obj_mask].mean()
@@ -148,12 +200,12 @@ class YOLOv3(nn.Module):
         self.upsample2 = self.make_upsample(512, 256, scale_factor=2)
         self.conv_block2 = self.make_conv_block(768, 256)
         self.conv_final2 = self.make_conv_final(256, final_out_channel)
-        self.yolo_layer2 = YOLODetection(anchors['scale2'], image_size, num_classes)
+        self.yolo_layer2 = YOLODetection(anchors['scale2'], image_size, num_classes) # [(30, 61), (62, 45), (59, 119)],
 
         self.upsample1 = self.make_upsample(256, 128, scale_factor=2)
         self.conv_block1 = self.make_conv_block(384, 128)
         self.conv_final1 = self.make_conv_final(128, final_out_channel)
-        self.yolo_layer1 = YOLODetection(anchors['scale1'], image_size, num_classes)
+        self.yolo_layer1 = YOLODetection(anchors['scale1'], image_size, num_classes) # [(10, 13), (16, 30), (33, 23)],
 
         self.yolo_layers = [self.yolo_layer1, self.yolo_layer2, self.yolo_layer3]
 
@@ -172,24 +224,29 @@ class YOLOv3(nn.Module):
                 elif module_type == 'residual':
                     out = module(x)
                     x += out #현재값을 추가적으로 가짐
+                    #다음 block에 대해서는 딕션어리에 값 추가
                     if key == 'residual_3_8' or key == 'residual_4_8' or key == 'residual_5_4': #젤 끝에 해당하는 layer
-                        residual_output[key] = x
+                        residual_output[key] = x 
 
         # Yolov3 layer forward
-        conv_block3 = self.conv_block3(residual_output['residual_5_4']) #마지막 conv layer
+        conv_block3 = self.conv_block3(residual_output['residual_5_4']) #마지막 conv layer 1024->512
         scale3 = self.conv_final3(conv_block3) #512 -> 3*(4 + 1 + num_classes)
+        #print(scale3.size())
+
         yolo_output3, layer_loss = self.yolo_layer3(scale3, targets) #output과 loss 리턴
         loss += layer_loss
 
         scale2 = self.upsample2(conv_block3)
-        scale2 = torch.cat((scale2, residual_output['residual_4_8']), dim=1)
-        conv_block2 = self.conv_block2(scale2)
-        scale2 = self.conv_final2(conv_block2)
+        scale2 = torch.cat((scale2, residual_output['residual_4_8']), dim=1) #upsampling과 forward해서 구한 값을 concat
+        #print(scale2)
+        conv_block2 = self.conv_block2(scale2) #768 -> 256
+        scale2 = self.conv_final2(conv_block2) #256 -> 3*(4 + 1 + num_classes)
         yolo_output2, layer_loss = self.yolo_layer2(scale2, targets)
         loss += layer_loss
 
-        scale1 = self.upsample1(conv_block2)
+        scale1 = self.upsample1(conv_block2) #256->128
         scale1 = torch.cat((scale1, residual_output['residual_3_8']), dim=1)
+        #print(scale3)
         conv_block1 = self.conv_block1(scale1)
         scale1 = self.conv_final1(conv_block1)
         yolo_output1, layer_loss = self.yolo_layer1(scale1, targets)
@@ -248,8 +305,8 @@ class YOLOv3(nn.Module):
         #conv,batchnorm,LeakyReLU적용
         modules = nn.Sequential(module1, module2, nn.LeakyReLU(negative_slope=0.1))
         return modules
-
-    def make_conv_block(self, in_channels: int, out_channels: int):
+    ##1x1 3번 반복, #3x3 2번 반복
+    def make_conv_block(self, in_channels: int, out_channels: int): #e.g., 1024,512
         double_channels = out_channels * 2
         modules = nn.Sequential(
             self.make_conv(in_channels, out_channels, kernel_size=1, padding=0), #1x1
@@ -260,11 +317,11 @@ class YOLOv3(nn.Module):
         )
         return modules
     #3x3,1x1
-    def make_conv_final(self, in_channels: int, out_channels: int):
+    def make_conv_final(self, in_channels: int, out_channels: int): #e.g., 512 -> 3*(4 + 1 + num_classes)
         modules = nn.Sequential(
-            self.make_conv(in_channels, in_channels * 2, kernel_size=3),
-            nn.Conv2d(in_channels * 2, out_channels, kernel_size=1, stride=1, padding=0, bias=True)
-        )
+            self.make_conv(in_channels, in_channels * 2, kernel_size=3), #512  -> 1024
+            nn.Conv2d(in_channels * 2, out_channels, kernel_size=1, stride=1, padding=0, bias=True) #마지막에는 batch_norm하지 않음
+        ) #1024 -> 3*(4 + 1 + num_classes)
         return modules
 
     def make_residual_block(self, in_channels: int):
@@ -275,8 +332,8 @@ class YOLOv3(nn.Module):
         )
         return block
     #이 때 nearest neighbor사용
-    #1x1으로 채널 수 줄이고 upsampling
-    def make_upsample(self, in_channels: int, out_channels: int, scale_factor: int):
+    #1x1으로 채널 수 줄이고 2배로 upsampling
+    def make_upsample(self, in_channels: int, out_channels: int, scale_factor: int): #e.g., 512->256
         modules = nn.Sequential(
             self.make_conv(in_channels, out_channels, kernel_size=1, padding=0),
             nn.Upsample(scale_factor=scale_factor, mode='nearest')
@@ -383,13 +440,45 @@ class YOLOv3(nn.Module):
 
         return ptr
 
-
 if __name__ == '__main__':
-    model = YOLOv3(image_size=416, num_classes=80)
-    model.load_darknet_weights('../weights/yolov3.weights')
-    print(model)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    test = torch.rand([1, 3, 416, 416])
+
+    data_config = utils.utils.parse_data_config("config/voc.data")
+    valid_path = data_config['valid']
+    num_classes = int(data_config['classes'])
+    class_names = utils.utils.load_classes(data_config['names'])
+
+    print(class_names,111)
+
+    model = YOLOv3(image_size=416, num_classes=20)
+    model.load_darknet_weights('model/weights/yolov3.weights')
+    #print(model)
+
+    #test = torch.rand([1, 3, 416, 416])
+
+    dataset = utils.datasets.ListDataset(valid_path, 416, augment=True, multiscale=False)
+ 
+    dataloader = torch.utils.data.DataLoader(dataset,
+                                         batch_size=1,
+                                         shuffle=False,
+                                         num_workers=4,
+                                        ) #batchsize가 2이상인 경우 collate_fn을 설정하여 값을 넘겨줘야 함
+
+    
+
+    for batch_idx, (_, images, targets) in enumerate(tqdm.tqdm(dataloader, desc='Batch', leave=False)):
+
+
+        images = images.to(device)
+        targets = targets.to(device)
+
+        # print(targets)
+        test = torch.rand([1, 3, 416, 416])
+        loss, outputs = model(test, targets)
+        exit()
+
+
     y = model(test)
 
     writer = torch.utils.tensorboard.SummaryWriter('../logs')

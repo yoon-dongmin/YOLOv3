@@ -69,15 +69,15 @@ class ListDataset(torch.utils.data.Dataset):
             self.image_files = file.readlines()
 
         self.label_files = [path.replace('images', 'labels').replace('.png', '.txt').replace('.jpg', '.txt')
-                                .replace('JPEGImages', 'labels') for path in self.image_files]
-        self.image_size = image_size
+                                .replace('JPEGImages', 'labels') for path in self.image_files] #다음의 변경으로 label값을 가져옴
+        self.image_size = image_size #416
         self.max_objects = 100
         self.augment = augment
-        self.multiscale = multiscale
-        self.normalized_labels = normalized_labels
+        self.multiscale = multiscale 
+        self.normalized_labels = normalized_labels #label정규화?
         self.batch_count = 0
 
-    def __getitem__(self, index):
+    def __getitem__(self, index): #인덱스를 입력으로 받음
         # 1. Image
         # -----------------------------------------------------------------------------------
         image_path = self.image_files[index].rstrip()

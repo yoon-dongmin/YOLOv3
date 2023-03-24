@@ -31,9 +31,9 @@ print(args)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 데이터셋 설정값을 가져오기
-data_config = utils.utils.parse_data_config(args.data_config)
-num_classes = int(data_config['classes'])
-class_names = utils.utils.load_classes(data_config['names'])
+data_config = utils.utils.parse_data_config(args.data_config)  #config/voc.data
+num_classes = int(data_config['classes']) #20 
+class_names = utils.utils.load_classes(data_config['names']) 
 
 # 모델 준비하기
 model = model.yolov3.YOLOv3(args.image_size, num_classes).to(device)

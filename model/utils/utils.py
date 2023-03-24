@@ -75,7 +75,7 @@ def rescale_boxes_original(prediction, rescaled_size: int, original_size: tuple)
     return prediction
 
 
-def xywh2xyxy(x):
+def xywh2xyxy(x): #check
     y = x.new(x.shape)
     y[..., 0] = x[..., 0] - x[..., 2] / 2
     y[..., 1] = x[..., 1] - x[..., 3] / 2
@@ -207,11 +207,11 @@ def get_batch_statistics(outputs, targets, iou_threshold):
     return batch_metrics
 
 
-def bbox_wh_iou(wh1, wh2):
-    wh2 = wh2.t()
+def bbox_wh_iou(wh1, wh2): #(anchor,gt)
+    wh2 = wh2.t() #transpose
     w1, h1 = wh1[0], wh1[1]
     w2, h2 = wh2[0], wh2[1]
-    inter_area = torch.min(w1, w2) * torch.min(h1, h2)
+    inter_area = torch.min(w1, w2) * torch.min(h1, h2) #너비와 높이를 작은 것의 값을 가져옴
     union_area = (w1 * h1 + 1e-16) + w2 * h2 - inter_area
     return inter_area / union_area
 
@@ -256,13 +256,14 @@ def non_max_suppression(prediction, conf_thres, nms_thres):
         (x1, y1, x2, y2, object_conf, class_score, class_pred)
     """
 
-    # (cx, cy, w, h) -> (x1, y1, x2, y2)
+    # (cx, cy, w, h) -> (x1, y1, x2, y2) 좌상단 우하단
     prediction[..., :4] = xywh2xyxy(prediction[..., :4])
+    #print(prediction[..., :4])
     output = [None for _ in range(len(prediction))]
 
     for image_i, image_pred in enumerate(prediction):
         # Filter out confidence scores below threshold
-        image_pred = image_pred[image_pred[:, 4] >= conf_thres]
+        image_pred = image_pred[image_pred[:, 4] >= conf_thres] #우선 0.5이하는 잘라냄
 
         # If none are remaining => process next image
         if not image_pred.size(0):
@@ -270,6 +271,7 @@ def non_max_suppression(prediction, conf_thres, nms_thres):
 
         # Object confidence times class confidence
         score = image_pred[:, 4] * image_pred[:, 5:].max(1)[0]
+        #print(image_pred[:, 5:].max(1)[0])
 
         # Sort by it
         image_pred = image_pred[(-score).argsort()]
@@ -295,16 +297,18 @@ def non_max_suppression(prediction, conf_thres, nms_thres):
 
 
 def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres, device):
-    nB = pred_boxes.size(0)
-    nA = pred_boxes.size(1)
-    nC = pred_cls.size(-1)
-    nG = pred_boxes.size(2)
+
+    nB = pred_boxes.size(0) #batch #1
+    nA = pred_boxes.size(1) #anchor box#3
+    nC = pred_cls.size(-1)  #cls #80
+    nG = pred_boxes.size(2) #grid cell #13
 
     # Output tensors
-    obj_mask = torch.zeros(nB, nA, nG, nG, dtype=torch.bool, device=device)
-    noobj_mask = torch.ones(nB, nA, nG, nG, dtype=torch.bool, device=device)
-    class_mask = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
-    iou_scores = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
+    # 출력할 vector 초기화
+    obj_mask = torch.zeros(nB, nA, nG, nG, dtype=torch.bool, device=device) #bool false
+    noobj_mask = torch.ones(nB, nA, nG, nG, dtype=torch.bool, device=device) #bool True
+    class_mask = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device) #0
+    iou_scores = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device) #0
     tx = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
     ty = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
     tw = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
@@ -312,30 +316,37 @@ def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres, device):
     tcls = torch.zeros(nB, nA, nG, nG, nC, dtype=torch.float, device=device)
 
     # Convert to position relative to box
+    # 출력 해봐야 함
     target_boxes = target[:, 2:6] * nG
-    gxy = target_boxes[:, :2]
-    gwh = target_boxes[:, 2:]
+    gxy = target_boxes[:, :2] #x,y값
+    gwh = target_boxes[:, 2:] #w,h값
 
     # Get anchors with best iou
-    ious = torch.stack([bbox_wh_iou(anchor, gwh) for anchor in anchors])
-    _, best_ious_idx = ious.max(0)
+    # 모든 iou값을 가져옴
+    ious = torch.stack([bbox_wh_iou(anchor, gwh) for anchor in anchors]) #scaled anchor
+    #print(ious)
+    _, best_ious_idx = ious.max(0) #가장 큰값 index가져옴
 
     # Separate target values
-    b, target_labels = target[:, :2].long().t()
+    b, target_labels = target[:, :2].long().t() 
+    #print(target[:, :2])
     gx, gy = gxy.t()
     gw, gh = gwh.t()
     gi, gj = gxy.long().t()
 
     # Set masks
-    obj_mask[b, best_ious_idx, gj, gi] = 1
-    noobj_mask[b, best_ious_idx, gj, gi] = 0
+    obj_mask[b, best_ious_idx, gj, gi] = 1 #obj_mask의 값은 1
+    noobj_mask[b, best_ious_idx, gj, gi] = 0 #noobj_mask의 값은 0
 
     # Set noobj mask to zero where iou exceeds ignore threshold
+    # ignore_thres값 : 0.5를 넘으면 noobj_mask의 값 0
     for i, anchor_ious in enumerate(ious.t()):
         noobj_mask[b[i], anchor_ious > ignore_thres, gj[i], gi[i]] = 0
 
     # Coordinates
     tx[b, best_ious_idx, gj, gi] = gx - gx.floor()
+    #print(gx)
+    #print(gx.floor())
     ty[b, best_ious_idx, gj, gi] = gy - gy.floor()
 
     # Width and height
@@ -347,7 +358,10 @@ def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres, device):
 
     # Compute label correctness and iou at best anchor
     class_mask[b, best_ious_idx, gj, gi] = (pred_cls[b, best_ious_idx, gj, gi].argmax(-1) == target_labels).float()
+    
     iou_scores[b, best_ious_idx, gj, gi] = bbox_iou(pred_boxes[b, best_ious_idx, gj, gi], target_boxes, x1y1x2y2=False)
 
     tconf = obj_mask.float()
     return iou_scores, class_mask, obj_mask, noobj_mask, tx, ty, tw, th, tcls, tconf
+
+

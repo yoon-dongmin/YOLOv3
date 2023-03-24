@@ -42,7 +42,7 @@ class_names = utils.utils.load_classes(data_config['names'])
 
 # 모델 준비하기
 model = model.yolov3.YOLOv3(args.image_size, num_classes).to(device)
-model.apply(utils.utils.init_weights_normal) #pretrain된 모델 수정
+model.apply(utils.utils.init_weights_normal) #모델 초기화
 if args.pretrained_weights.endswith('.pth'): #접미사로 문장 찾기
     model.load_state_dict(torch.load(args.pretrained_weights))
 else:
